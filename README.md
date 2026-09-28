@@ -107,13 +107,15 @@ python user_profile.py --token "eyJ..."
 Event history fetches one page by default. Set `--max-pages` to follow additional
 pages, including empty pages that still have a continuation link. The returned
 `data` contains the collected events; `links.next`, when present at the limit,
-is the remaining continuation. Requests have a 30-second timeout, and repeated
-continuations stop with an error. Access remains limited to events after the
+is the remaining continuation. Requests have a 30-second timeout. Repeated
+continuations stop with a warning, preserving collected events as partial results
+and retaining the repeated `links.next`. HTTP failures raise an error. Access remains limited to events after the
 user's consent, as described in the [Event History API](https://developer.amazon.com/docs/ring/api-documentation.html#event-history).
 
 Run the offline pagination tests from the repository root:
 
 ```sh
+python -m pip install -r scripts/requirements.txt
 python -m unittest discover -s scripts -p 'test_*.py' -v
 ```
 
@@ -250,6 +252,7 @@ scripts/
 ├── device_location.py         # GET /v1/devices/{id}/location
 ├── device_configurations.py   # GET /v1/devices/{id}/configurations
 ├── event_history.py           # GET /v1/history/devices/{id}/events
+├── test_event_history.py      # Offline event-history pagination tests
 ├── user_profile.py            # GET /v1/users/me
 └── requirements.txt           # Python dependencies
 

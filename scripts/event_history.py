@@ -3,7 +3,7 @@
 
 import argparse
 import json
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import requests
 
@@ -28,9 +28,11 @@ def get_event_history(token, device_id, event_types=None, max_pages=1):
     endpoint_path = urlsplit(url).path
     events = []
     visited = set()
+    repeated = False
     for page in range(max_pages):
         if url in visited:
-            raise ValueError("Ring returned a repeated event-history page")
+            repeated = True
+            break
         visited.add(url)
         response = requests.get(url, headers=headers, params=params, timeout=30,
                                 allow_redirects=False)
@@ -38,21 +40,30 @@ def get_event_history(token, device_id, event_types=None, max_pages=1):
         if response.status_code != 200:
             raise ValueError("Expected HTTP 200 from Ring event history")
         data = response.json()
-        events.extend(data.get("data", []))
-        next_link = data.get("links", {}).get("next")
+        events.extend(data.get("data") or [])
+        next_link = (data.get("links") or {}).get("next")
         if not next_link or page + 1 == max_pages:
             break
         # Ring supplies a relative URL containing the original filters and cursor.
         # Keep the bearer token scoped to this device's Ring history endpoint.
         next_parts = urlsplit(next_link)
-        if (next_parts.scheme or next_parts.netloc or next_parts.fragment
-                or next_parts.path != endpoint_path):
+        if (not next_link.startswith("/") or next_link.startswith("//")
+                or any(ord(char) < 32 or ord(char) == 127 for char in next_link)
+                or next_parts.scheme or next_parts.netloc or next_parts.fragment
+                or unquote(next_parts.path, errors="strict")
+                != unquote(endpoint_path, errors="strict")):
             raise ValueError("Unexpected event-history continuation URL")
-        url = API_BASE + next_link
+        # Build from the trusted origin/path, copying only the API's query.
+        url = API_BASE + endpoint_path
+        if next_parts.query:
+            url += "?" + next_parts.query
         params = None
 
     data = {**data, "data": events}
-    if next_link:
+    if repeated:
+        print("Warning: Ring repeated an event-history page; stopped with partial "
+              "results. links.next retains the repeated continuation.")
+    elif next_link:
         print(f"Stopped after {max_pages} page(s); links.next is available for continuation.")
 
     print(f"Found {len(events)} event(s):\n")

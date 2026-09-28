@@ -66,15 +66,41 @@ class EventHistoryTests(unittest.TestCase):
 
     @patch("event_history.requests.get")
     def test_repeated_cursor_stops_before_third_request(self, get):
-        get.side_effect = [response([], NEXT), response([], NEXT)]
-        with self.assertRaisesRegex(ValueError, "repeated"):
-            get_event_history("test-token", "test-device", max_pages=4)
+        get.side_effect = [response([{"id": "one"}], NEXT), response([], NEXT)]
+        result = get_event_history("test-token", "test-device", max_pages=4)
         self.assertEqual(get.call_count, 2)
+        self.assertEqual(result["data"], [{"id": "one"}])
+        self.assertEqual(result["links"]["next"], NEXT)
+        self.assertIn("partial results", self.output.getvalue())
+        self.assertNotIn("Stopped after 4", self.output.getvalue())
+
+    @patch("event_history.requests.get")
+    def test_equivalent_device_encoding_and_literal_cursor_brackets(self, get):
+        device_id = "ava1.ring.device:abc+def="
+        link = f"/v1/history/devices/{device_id}/events?page[key]=cursor-2"
+        get.side_effect = [response([], link), response([{"id": "two"}])]
+        result = get_event_history("test-token", device_id, max_pages=2)
+        self.assertIn("ava1.ring.device%3Aabc%2Bdef%3D/events",
+                      get.call_args_list[0].args[0])
+        self.assertEqual(get.call_args_list[1].args[0],
+                         get.call_args_list[0].args[0] + "?page[key]=cursor-2")
+        self.assertEqual(result["data"], [{"id": "two"}])
+
+    @patch("event_history.requests.get")
+    def test_null_fields_are_empty(self, get):
+        get.return_value = response([])
+        get.return_value.json.return_value = {"data": None, "links": None}
+        result = get_event_history("test-token", "test-device", max_pages=2)
+        self.assertEqual(result["data"], [])
+        self.assertEqual(get.call_count, 1)
 
     @patch("event_history.requests.get")
     def test_continuation_stays_on_selected_device_endpoint(self, get):
         for link in ["https://other.example" + PATH, "//other.example" + PATH,
                      "/v1/history/devices/other/events?page[key]=x",
+                     "/v1/history/devices/test-device%2Fother/events?page[key]=x",
+                     "%2Fv1%2Fhistory%2Fdevices%2Ftest-device%2Fevents?page[key]=x",
+                     "\n" + PATH, PATH + "?page[key]=x\t",
                      PATH + "#fragment"]:
             with self.subTest(link=link):
                 get.reset_mock()
@@ -82,6 +108,16 @@ class EventHistoryTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "continuation"):
                     get_event_history("test-token", "test-device", max_pages=2)
                 self.assertEqual(get.call_count, 1)
+
+    @patch("event_history.requests.get")
+    def test_encoded_leading_slash_cannot_change_token_destination(self, get):
+        get.return_value = response([], "%2Fv1%2Fhistory%2Fdevices%2F"
+                                   "x@evil.example/events?page[key]=T")
+        with self.assertRaisesRegex(ValueError, "continuation"):
+            get_event_history("test-token", "x@evil.example", max_pages=2)
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_args.args[0],
+                         API_BASE + "/v1/history/devices/x%40evil.example/events")
 
     @patch("event_history.requests.get")
     def test_later_http_error_is_not_reported_as_complete(self, get):
